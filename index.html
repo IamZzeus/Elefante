@@ -30,15 +30,20 @@
         input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: #2563eb; cursor: pointer; margin-top: -6px; }
         input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; cursor: pointer; background: #cbd5e1; border-radius: 2px; }
         
-        /* Cursor para recorte */
+        /* Cursor para recorte y resize */
         .crosshair-cursor { cursor: crosshair; }
+        .resize-handle { width: 10px; height: 10px; background: white; border: 1px solid #2563eb; position: absolute; z-index: 60; }
+        .resize-nw { cursor: nw-resize; top: -5px; left: -5px; }
+        .resize-ne { cursor: ne-resize; top: -5px; right: -5px; }
+        .resize-sw { cursor: sw-resize; bottom: -5px; left: -5px; }
+        .resize-se { cursor: se-resize; bottom: -5px; right: -5px; }
     </style>
 </head>
 <body class="bg-gray-100 h-screen overflow-hidden">
     <div id="root" class="h-full"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useCallback } = React;
 
         // --- ICONOS SVG ---
         const IconUpload = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>;
@@ -61,6 +66,9 @@
         const IconSquare = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>;
         const IconCircle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg>;
         const IconRefresh = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38"/></svg>;
+        const IconDuplicate = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
+        const IconUndo = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>;
+        const IconRedo = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 3.7"/></svg>;
 
         // --- CONSTANTES ---
         const MARGIN_MM = 5;
@@ -80,18 +88,23 @@
             const [images, setImages] = useState([]);
             const [selectedIds, setSelectedIds] = useState([]);
             const [showHelp, setShowHelp] = useState(false);
+            
+            // Clipboard & History
+            const [internalClipboard, setInternalClipboard] = useState([]);
+            const [history, setHistory] = useState([]); // Array de estados
+            const [historyIndex, setHistoryIndex] = useState(-1); // Puntero al estado actual
 
             // -- Estados de Interacción --
             const [isDragging, setIsDragging] = useState(false);
             const [isPanning, setIsPanning] = useState(false);
-            const [dragState, setDragState] = useState(null);
+            const [dragState, setDragState] = useState(null); // type: 'MOVE', 'PAN', 'RESIZE'
             const [guides, setGuides] = useState([]); 
             const scrollContainerRef = useRef(null);
 
             // -- Estados de Recorte --
             const [cropTarget, setCropTarget] = useState(null);
             const [cropRect, setCropRect] = useState(null);
-            const [cropDragMode, setCropDragMode] = useState('none'); // 'none', 'create', 'move'
+            const [cropDragMode, setCropDragMode] = useState('none'); 
             const [cropDragOffset, setCropDragOffset] = useState({ x: 0, y: 0 });
             const [cropCursor, setCropCursor] = useState('crosshair');
             const [mouseStart, setMouseStart] = useState(null);
@@ -108,6 +121,46 @@
             const fromDisplay = (valDisplay) => { const num = parseFloat(valDisplay); return isNaN(num) ? 0 : (unit === 'cm' ? num / 2.54 : num); };
             const pxToIn = (px) => parseInt(px) / 96;
             const inToPx = (inc) => Math.round(inc * 96);
+
+            // --- Lógica de Historial (Undo/Redo) ---
+            // Guardar estado actual antes de un cambio
+            const pushHistory = () => {
+                const currentImagesState = JSON.parse(JSON.stringify(images));
+                const newHistory = history.slice(0, historyIndex + 1); // Cortar futuro si existe
+                newHistory.push(currentImagesState);
+                
+                // Limitar tamaño del historial
+                if (newHistory.length > 30) newHistory.shift();
+                
+                setHistory(newHistory);
+                setHistoryIndex(newHistory.length - 1);
+            };
+
+            // Solo al iniciar, guardar estado vacío
+            useEffect(() => {
+                if (historyIndex === -1 && images.length === 0) {
+                    setHistory([[]]);
+                    setHistoryIndex(0);
+                }
+            }, []);
+
+            const undo = () => {
+                if (historyIndex > 0) {
+                    const newIndex = historyIndex - 1;
+                    setImages(history[newIndex]);
+                    setHistoryIndex(newIndex);
+                    setSelectedIds([]);
+                }
+            };
+
+            const redo = () => {
+                if (historyIndex < history.length - 1) {
+                    const newIndex = historyIndex + 1;
+                    setImages(history[newIndex]);
+                    setHistoryIndex(newIndex);
+                    setSelectedIds([]);
+                }
+            };
 
             // --- Lógica de Páginas y Layout ---
             const addPage = () => {
@@ -157,6 +210,7 @@
 
             // --- Gestión de Imágenes ---
             const processImageFile = (file) => {
+                pushHistory(); 
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     const img = new Image();
@@ -173,7 +227,7 @@
                             rotation: 0,
                             originalAspect: aspect,
                             borderSize: 0, borderColor: '#000000',
-                            shape: 'rect' // Default shape
+                            shape: 'rect' 
                         };
                         setImages(prev => [...prev, newImage]);
                         setSelectedIds([newImage.id]); 
@@ -196,9 +250,11 @@
                 };
                 document.addEventListener('paste', handlePaste);
                 return () => document.removeEventListener('paste', handlePaste);
-            }, [activePageId]); 
+            }, [activePageId, images, historyIndex]); 
 
             const updateSelectedImages = (field, value) => {
+                // Para updates continuos desde input, no hacemos pushHistory en cada letra, 
+                // idealmente onBlur, pero simplificamos aqui sin history continuo
                 if (selectedIds.length === 0) return;
                 let finalVal = value;
                 if (['width','height','x','y'].includes(field)) finalVal = fromDisplay(value);
@@ -207,18 +263,71 @@
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, [field]: finalVal } : img));
             };
             const rotateSelected = (angle) => {
+                pushHistory();
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, rotation: (img.rotation + angle) % 360 } : img));
             };
             const fixAspectRatio = () => {
-                if (selectedIds.length === 0) return;
+                pushHistory();
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, height: img.width / img.originalAspect } : img));
             };
             const deleteSelected = () => {
+                pushHistory();
                 setImages(images.filter(img => !selectedIds.includes(img.id)));
                 setSelectedIds([]);
             };
 
-            // --- CROP: Lógica de Recorte Mejorada (Mover vs Crear) ---
+            const copySelection = () => {
+                const selected = images.filter(img => selectedIds.includes(img.id));
+                if (selected.length > 0) {
+                    setInternalClipboard(selected);
+                }
+            };
+
+            const pasteInternal = () => {
+                if (internalClipboard.length === 0) return;
+                pushHistory();
+                const newImages = internalClipboard.map(img => ({
+                    ...img,
+                    id: Date.now() + Math.random(),
+                    pageId: activePageId, 
+                    x: img.x + 0.2, 
+                    y: img.y + 0.2
+                }));
+                setImages(prev => [...prev, ...newImages]);
+                setSelectedIds(newImages.map(img => img.id));
+            };
+
+            const duplicateSelected = () => {
+                const selected = images.filter(img => selectedIds.includes(img.id));
+                if (selected.length === 0) return;
+                pushHistory();
+                const newImages = selected.map(img => ({
+                    ...img,
+                    id: Date.now() + Math.random(),
+                    x: img.x + 0.2,
+                    y: img.y + 0.2
+                }));
+                setImages(prev => [...prev, ...newImages]);
+                setSelectedIds(newImages.map(img => img.id));
+            };
+
+            // --- Atajos de Teclado ---
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+                    if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'c') copySelection();
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'v') pasteInternal();
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'd') { e.preventDefault(); duplicateSelected(); }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
+                };
+                window.addEventListener('keydown', handleKeyDown);
+                return () => window.removeEventListener('keydown', handleKeyDown);
+            }, [selectedIds, images, internalClipboard, history, historyIndex]);
+
+            // --- CROP ---
             const initiateCrop = () => {
                 if (selectedIds.length !== 1) { alert("Selecciona una sola imagen para recortar."); return; }
                 const img = images.find(i => i.id === selectedIds[0]);
@@ -231,28 +340,17 @@
                 const rect = cropCanvasRef.current.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
-
-                // Verificar si clicamos DENTRO del recorte existente para MOVERLO
                 let clickedInside = false;
                 if (cropRect && cropRect.w > 0 && cropRect.h > 0) {
                     if (cropShape === 'rect') {
                         if (x >= cropRect.x && x <= cropRect.x + cropRect.w && y >= cropRect.y && y <= cropRect.y + cropRect.h) clickedInside = true;
                     } else {
-                        const cx = cropRect.x + cropRect.w / 2;
-                        const cy = cropRect.y + cropRect.h / 2;
-                        const radius = cropRect.w / 2;
+                        const cx = cropRect.x + cropRect.w / 2; const cy = cropRect.y + cropRect.h / 2; const radius = cropRect.w / 2;
                         if (Math.hypot(x - cx, y - cy) <= radius) clickedInside = true;
                     }
                 }
-
-                if (clickedInside) {
-                    setCropDragMode('move');
-                    setCropDragOffset({ x: x - cropRect.x, y: y - cropRect.y });
-                } else {
-                    setCropDragMode('create');
-                    setMouseStart({ x, y });
-                    setCropRect({ x, y, w: 0, h: 0 });
-                }
+                if (clickedInside) { setCropDragMode('move'); setCropDragOffset({ x: x - cropRect.x, y: y - cropRect.y }); } 
+                else { setCropDragMode('create'); setMouseStart({ x, y }); setCropRect({ x, y, w: 0, h: 0 }); }
             };
 
             const handleCropCanvasMouseMoveWrapper = (e) => {
@@ -262,15 +360,13 @@
                 const canvasW = cropCanvasRef.current.width;
                 const canvasH = cropCanvasRef.current.height;
 
-                // Actualizar cursor visualmente
                 if (cropDragMode === 'none') {
                     let isOver = false;
                     if (cropRect && cropRect.w > 0) {
                         if (cropShape === 'rect') {
                             if (currentX >= cropRect.x && currentX <= cropRect.x + cropRect.w && currentY >= cropRect.y && currentY <= cropRect.y + cropRect.h) isOver = true;
                         } else {
-                            const cx = cropRect.x + cropRect.w / 2;
-                            const cy = cropRect.y + cropRect.h / 2;
+                            const cx = cropRect.x + cropRect.w / 2; const cy = cropRect.y + cropRect.h / 2;
                             if (Math.hypot(currentX - cx, currentY - cy) <= cropRect.w / 2) isOver = true;
                         }
                     }
@@ -278,58 +374,41 @@
                     return;
                 }
 
-                // Lógica de Arrastre
                 if (cropDragMode === 'create' && mouseStart) {
                     let w = Math.abs(currentX - mouseStart.x);
                     let h = Math.abs(currentY - mouseStart.y);
-                    if (cropShape === 'circle') {
-                        const size = Math.max(w, h);
-                        w = size; h = size;
-                    }
+                    if (cropShape === 'circle') { const size = Math.max(w, h); w = size; h = size; }
                     const newX = currentX < mouseStart.x ? mouseStart.x - w : mouseStart.x;
                     const newY = currentY < mouseStart.y ? mouseStart.y - h : mouseStart.y;
                     setCropRect({ x: newX, y: newY, w, h });
                 } else if (cropDragMode === 'move' && cropRect) {
                     let newX = currentX - cropDragOffset.x;
                     let newY = currentY - cropDragOffset.y;
-                    // Restringir al canvas para no sacar el recorte de la imagen
                     newX = Math.max(0, Math.min(newX, canvasW - cropRect.w));
                     newY = Math.max(0, Math.min(newY, canvasH - cropRect.h));
                     setCropRect(prev => ({ ...prev, x: newX, y: newY }));
                 }
             };
 
-            const handleCropCanvasMouseUp = () => {
-                setCropDragMode('none');
-                setMouseStart(null);
-            };
+            const handleCropCanvasMouseUp = () => { setCropDragMode('none'); setMouseStart(null); };
             
             const applyCrop = () => {
                 if (!cropRect || cropRect.w === 0 || cropRect.h === 0) { closeCrop(); return; }
+                pushHistory(); 
                 const canvas = cropCanvasRef.current, imgElement = cropImageRef.current; 
                 const scaleX = imgElement.naturalWidth / canvas.width, scaleY = imgElement.naturalHeight / canvas.height;
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = cropRect.w * scaleX; tempCanvas.height = cropRect.h * scaleY;
                 const ctx = tempCanvas.getContext('2d');
-
                 if (cropShape === 'circle') {
-                    ctx.beginPath();
-                    ctx.ellipse(tempCanvas.width/2, tempCanvas.height/2, tempCanvas.width/2, tempCanvas.height/2, 0, 0, 2*Math.PI);
-                    ctx.clip();
+                    ctx.beginPath(); ctx.ellipse(tempCanvas.width/2, tempCanvas.height/2, tempCanvas.width/2, tempCanvas.height/2, 0, 0, 2*Math.PI); ctx.clip();
                 }
-
                 ctx.drawImage(imgElement, cropRect.x * scaleX, cropRect.y * scaleY, cropRect.w * scaleX, cropRect.h * scaleY, 0, 0, tempCanvas.width, tempCanvas.height);
                 const newSrc = tempCanvas.toDataURL('image/png');
                 setImages(images.map(img => {
                     if (img.id === cropTarget.id) {
                         const newAspect = tempCanvas.width / tempCanvas.height;
-                        return { 
-                            ...img, 
-                            src: newSrc, 
-                            height: img.width / newAspect, 
-                            originalAspect: newAspect,
-                            shape: cropShape // Guardar forma del recorte
-                        };
+                        return { ...img, src: newSrc, height: img.width / newAspect, originalAspect: newAspect, shape: cropShape };
                     } return img;
                 }));
                 closeCrop();
@@ -344,15 +423,11 @@
                     if (cropRect) {
                         ctx.save();
                         if (cropShape === 'circle') {
-                            ctx.beginPath();
-                            ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI);
-                            ctx.clip();
+                            ctx.beginPath(); ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI); ctx.clip();
                             ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
                             ctx.drawImage(img, (cropRect.x/canvas.width)*img.naturalWidth, (cropRect.y/canvas.height)*img.naturalHeight, (cropRect.w/canvas.width)*img.naturalWidth, (cropRect.h/canvas.height)*img.naturalHeight, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
                             ctx.restore();
-                            ctx.beginPath();
-                            ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI);
-                            ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.stroke();
+                            ctx.beginPath(); ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI); ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.stroke();
                         } else {
                             ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
                             ctx.drawImage(img, (cropRect.x/canvas.width)*img.naturalWidth, (cropRect.y/canvas.height)*img.naturalHeight, (cropRect.w/canvas.width)*img.naturalWidth, (cropRect.h/canvas.height)*img.naturalHeight, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
@@ -360,11 +435,28 @@
                         }
                     }
                 }
-            }, [cropRect, cropTarget, cropShape, cropDragMode]); // Re-renderizar si cambia el modo de arrastre
+            }, [cropRect, cropTarget, cropShape, cropDragMode]);
 
-            // --- Interacciones Main Canvas ---
-            const handleMouseDown = (e, img) => {
-                if (e.button === 1 || (!img && e.button === 0)) { 
+            // --- Scroll Zoom (Shift + Scroll) ---
+            useEffect(() => {
+                const container = scrollContainerRef.current;
+                if (!container) return;
+
+                const handleWheel = (e) => {
+                    if (e.shiftKey) {
+                        e.preventDefault();
+                        const zoomDelta = e.deltaY > 0 ? -0.1 : 0.1;
+                        setZoom(prev => Math.min(3.0, Math.max(0.1, parseFloat((prev + zoomDelta).toFixed(1)))));
+                    }
+                };
+
+                container.addEventListener('wheel', handleWheel, { passive: false });
+                return () => container.removeEventListener('wheel', handleWheel);
+            }, []);
+
+            // --- Interacciones Main Canvas (Move & Resize) ---
+            const handleMouseDown = (e, img, handleType = null) => {
+                if (e.button === 1 || (!img && e.button === 0 && !handleType)) { 
                     if (e.button === 1) e.preventDefault(); 
                     setIsPanning(true);
                     if (scrollContainerRef.current) {
@@ -372,7 +464,29 @@
                     }
                     return; 
                 }
+                
+                // Resizing
+                if (handleType && img) {
+                    e.stopPropagation();
+                    pushHistory();
+                    setDragState({ 
+                        type: 'RESIZE', 
+                        imgId: img.id, 
+                        handle: handleType,
+                        startX: e.clientX, 
+                        startY: e.clientY, 
+                        startW: img.width, 
+                        startH: img.height,
+                        startImgX: img.x,
+                        startImgY: img.y,
+                        aspect: img.width / img.height
+                    });
+                    setIsDragging(true);
+                    return;
+                }
+
                 if (img) { 
+                    pushHistory(); 
                     e.stopPropagation();
                     let newSelection = [...selectedIds];
                     if (e.ctrlKey || e.metaKey) { newSelection.includes(img.id) ? newSelection = newSelection.filter(id=>id!==img.id) : newSelection.push(img.id); } 
@@ -403,7 +517,62 @@
                     scrollContainerRef.current.scrollTop = dragState.initialScrollTop - (e.clientY - dragState.startY);
                     return;
                 }
-                if (!isDragging || !dragState || dragState.type !== 'MOVE') return;
+                
+                if (!isDragging || !dragState) return;
+
+                // RESIZE LOGIC
+                if (dragState.type === 'RESIZE') {
+                    e.preventDefault();
+                    const deltaX = (e.clientX - dragState.startX) / CURRENT_PPI;
+                    const deltaY = (e.clientY - dragState.startY) / CURRENT_PPI;
+                    
+                    let newW = dragState.startW;
+                    let newH = dragState.startH;
+                    let newX = dragState.startImgX;
+                    let newY = dragState.startImgY;
+
+                    // Calcular nuevo tamaño basado en qué esquina se arrastra
+                    switch(dragState.handle) {
+                        case 'se': 
+                            newW = Math.max(0.1, dragState.startW + deltaX); 
+                            newH = Math.max(0.1, dragState.startH + deltaY); 
+                            break;
+                        case 'sw': 
+                            newW = Math.max(0.1, dragState.startW - deltaX); 
+                            newH = Math.max(0.1, dragState.startH + deltaY); 
+                            newX = dragState.startImgX + (dragState.startW - newW);
+                            break;
+                        case 'ne': 
+                            newW = Math.max(0.1, dragState.startW + deltaX); 
+                            newH = Math.max(0.1, dragState.startH - deltaY); 
+                            newY = dragState.startImgY + (dragState.startH - newH);
+                            break;
+                        case 'nw': 
+                            newW = Math.max(0.1, dragState.startW - deltaX); 
+                            newH = Math.max(0.1, dragState.startH - deltaY); 
+                            newX = dragState.startImgX + (dragState.startW - newW);
+                            newY = dragState.startImgY + (dragState.startH - newH);
+                            break;
+                    }
+
+                    // Proporcionalidad con Shift
+                    if (e.shiftKey) {
+                        // Usar el eje mayor de cambio para determinar el tamaño
+                        if (newW / dragState.aspect > newH) {
+                            newH = newW / dragState.aspect;
+                        } else {
+                            newW = newH * dragState.aspect;
+                        }
+                        // Reajustar posición si es resize desde izquierda o arriba
+                        if (dragState.handle.includes('w')) newX = dragState.startImgX + (dragState.startW - newW);
+                        if (dragState.handle.includes('n')) newY = dragState.startImgY + (dragState.startH - newH);
+                    }
+
+                    setImages(images.map(img => img.id === dragState.imgId ? { ...img, x: newX, y: newY, width: newW, height: newH } : img));
+                    return;
+                }
+
+                if (dragState.type !== 'MOVE') return;
 
                 let deltaX = (e.clientX - dragState.startX) / CURRENT_PPI;
                 let deltaY = (e.clientY - dragState.startY) / CURRENT_PPI;
@@ -452,7 +621,7 @@
                 let proposedDeltaX = deltaX + snapAdjustmentX;
                 let proposedDeltaY = deltaY + snapAdjustmentY;
 
-                // RESTRICCIÓN DE MÁRGENES (CLAMPING AVANZADO CON ROTACIÓN)
+                // RESTRICCIÓN DE MÁRGENES
                 let minDx = -Infinity, maxDx = Infinity, minDy = -Infinity, maxDy = Infinity;
                 selectedIds.forEach(id => {
                     const pos = dragState.initialPositions[id];
@@ -490,13 +659,11 @@
                                 const r = parseInt(img.borderColor.slice(1, 3), 16), g = parseInt(img.borderColor.slice(3, 5), 16), b = parseInt(img.borderColor.slice(5, 7), 16);
                                 doc.setFillColor(r, g, b);
                                 if (img.shape === 'circle') {
-                                    // Dibujar círculo si la imagen está recortada como círculo
                                     const radius = (img.width / 2) + img.borderSize;
                                     const cx = img.x + (img.width / 2);
                                     const cy = img.y + (img.height / 2);
                                     doc.circle(cx, cy, radius, 'F');
                                 } else {
-                                    // Rectángulo normal si no (solo si no hay rotación compleja, jsPDF básico)
                                     if(rot === 0) doc.rect(img.x - img.borderSize, img.y - img.borderSize, img.width + img.borderSize*2, img.height + img.borderSize*2, 'F');
                                 }
                             }
@@ -580,7 +747,11 @@
                                                 <select value={inToPx(firstSelected.borderSize)} onChange={e=>updateSelectedImages('borderSizePx',e.target.value)} className="w-full p-2 border border-gray-300 rounded text-sm"><option value="0">Sin borde</option><option value="1">1 px</option><option value="2">2 px</option><option value="3">3 px</option><option value="5">5 px</option><option value="10">10 px</option></select>
                                             </div>
                                             <button onClick={fixAspectRatio} className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 py-1.5 px-2 rounded text-xs flex items-center justify-center gap-1 font-medium mb-3"><IconCheck /> Igualar Proporción</button>
-                                            <button onClick={()=>setSelectedIds([])} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded text-sm font-bold flex items-center justify-center gap-2 shadow-sm">Aceptar</button>
+                                            
+                                            <div className="flex gap-2">
+                                                <button onClick={duplicateSelected} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2 px-3 rounded text-sm font-bold flex items-center justify-center gap-2 shadow-sm border border-gray-300"><IconDuplicate /> Duplicar</button>
+                                                <button onClick={()=>setSelectedIds([])} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded text-sm font-bold flex items-center justify-center gap-2 shadow-sm">Aceptar</button>
+                                            </div>
                                         </div>
                                     </div>
                                 ) : <div className="text-center py-10 text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-lg">Selecciona una imagen.</div>}
@@ -612,7 +783,16 @@
                                                     borderRadius: img.shape === 'circle' ? '50%' : '0' 
                                                 }}>
                                                 <img src={img.src} className="w-full h-full object-fill pointer-events-none block" style={{ opacity: isDragging && selectedIds.includes(img.id) ? 0.7 : 1 }} />
-                                                {selectedIds.includes(img.id) && <div className="absolute inset-0 border-2 border-blue-600 pointer-events-none" style={{ margin: `-${img.borderSize * CURRENT_PPI + 2}px`, borderRadius: img.shape === 'circle' ? '50%' : '0' }}></div>}
+                                                {selectedIds.includes(img.id) && (
+                                                    <>
+                                                        <div className="absolute inset-0 border-2 border-blue-600 pointer-events-none" style={{ margin: `-${img.borderSize * CURRENT_PPI + 2}px`, borderRadius: img.shape === 'circle' ? '50%' : '0' }}></div>
+                                                        {/* Resize Handles */}
+                                                        <div className="resize-handle resize-nw" onMouseDown={e=>handleMouseDown(e, img, 'nw')}></div>
+                                                        <div className="resize-handle resize-ne" onMouseDown={e=>handleMouseDown(e, img, 'ne')}></div>
+                                                        <div className="resize-handle resize-sw" onMouseDown={e=>handleMouseDown(e, img, 'sw')}></div>
+                                                        <div className="resize-handle resize-se" onMouseDown={e=>handleMouseDown(e, img, 'se')}></div>
+                                                    </>
+                                                )}
                                             </div>
                                         ))}
                                     </div>
@@ -622,10 +802,33 @@
                             {/* Zoom y Paginación (Fijos z-60) */}
                             <div className="absolute bottom-20 right-8 bg-white p-2 rounded-lg shadow-xl border border-gray-200 flex items-center gap-3 z-[60]">
                                 <button onClick={()=>setZoom(z=>Math.max(0.1,z-0.1))}><IconZoomOut /></button>
-                                <input type="range" min="0.1" max="2.0" step="0.05" value={zoom} onChange={e=>setZoom(parseFloat(e.target.value))} className="w-24"/>
+                                <select 
+                                    className="bg-transparent text-xs font-bold text-center w-16 border-none outline-none cursor-pointer appearance-none hover:text-blue-600"
+                                    value={zoom}
+                                    onChange={(e) => setZoom(parseFloat(e.target.value))}
+                                >
+                                    <option value="0.25">25%</option>
+                                    <option value="0.5">50%</option>
+                                    <option value="0.75">75%</option>
+                                    <option value="1">100%</option>
+                                    <option value="1.25">125%</option>
+                                    <option value="1.5">150%</option>
+                                    <option value="2">200%</option>
+                                </select>
                                 <button onClick={()=>setZoom(z=>Math.min(3.0,z+0.1))}><IconZoomIn /></button>
-                                <span className="text-xs font-bold w-10">{(zoom*100).toFixed(0)}%</span>
                             </div>
+
+                            {/* Floating Toolbar: Undo/Redo */}
+                            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-white p-2 rounded-full shadow-xl border border-gray-200 flex items-center gap-2 z-[60]">
+                                <button onClick={undo} className="p-2 hover:bg-gray-100 rounded-full text-gray-600" title="Deshacer (Ctrl+Z)" disabled={historyIndex <= 0} style={{opacity: historyIndex <= 0 ? 0.3 : 1}}>
+                                    <IconUndo />
+                                </button>
+                                <div className="w-[1px] h-4 bg-gray-300"></div>
+                                <button onClick={redo} className="p-2 hover:bg-gray-100 rounded-full text-gray-600" title="Rehacer (Ctrl+Y)" disabled={historyIndex >= history.length - 1} style={{opacity: historyIndex >= history.length - 1 ? 0.3 : 1}}>
+                                    <IconRedo />
+                                </button>
+                            </div>
+
                             <div className="h-16 bg-white border-t border-gray-200 flex items-center px-4 gap-3 overflow-x-auto scrollbar-hide shrink-0 z-[60] relative shadow-lg">
                                 <span className="text-xs font-bold text-gray-400 uppercase mr-2 sticky left-0 bg-white z-10 py-2">Hojas:</span>
                                 {pages.map((p,idx) => (
@@ -739,6 +942,10 @@
                                     <div className="flex gap-3">
                                         <div className="bg-teal-100 p-2 rounded h-fit text-teal-600"><IconUpload /></div>
                                         <div><h4 className="font-bold">Copiar y Pegar</h4><p>Puedes presionar <b>Ctrl+V</b> para pegar imágenes directamente desde el portapapeles.</p></div>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <div className="bg-gray-100 p-2 rounded h-fit text-gray-600"><IconUndo /></div>
+                                        <div><h4 className="font-bold">Deshacer</h4><p>Presiona <b>Ctrl+Z</b> para revertir la última acción.</p></div>
                                     </div>
                                     <div className="mt-4 pt-4 border-t text-center text-xs text-gray-400">
                                         Clic fuera de este cuadro para cerrar.
