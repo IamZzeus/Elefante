@@ -58,6 +58,9 @@
         const IconLandscape = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="6" width="18" height="12" rx="2" fill="none"/></svg>;
         const IconHelp = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>;
         const IconRotate = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>;
+        const IconSquare = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>;
+        const IconCircle = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/></svg>;
+        const IconRefresh = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38"/></svg>;
 
         // --- CONSTANTES ---
         const MARGIN_MM = 5;
@@ -72,7 +75,7 @@
             const [activePageId, setActivePageId] = useState(1);
             const [customSize, setCustomSize] = useState({ width: 24, height: 36 });
             const [isCustom, setIsCustom] = useState(false);
-            const [unit, setUnit] = useState('cm'); // CAMBIO: Centímetros por defecto
+            const [unit, setUnit] = useState('cm'); 
             const [zoom, setZoom] = useState(0.5);
             const [images, setImages] = useState([]);
             const [selectedIds, setSelectedIds] = useState([]);
@@ -88,7 +91,11 @@
             // -- Estados de Recorte --
             const [cropTarget, setCropTarget] = useState(null);
             const [cropRect, setCropRect] = useState(null);
-            const [isSelectingCrop, setIsSelectingCrop] = useState(false);
+            const [cropDragMode, setCropDragMode] = useState('none'); // 'none', 'create', 'move'
+            const [cropDragOffset, setCropDragOffset] = useState({ x: 0, y: 0 });
+            const [cropCursor, setCropCursor] = useState('crosshair');
+            const [mouseStart, setMouseStart] = useState(null);
+            const [cropShape, setCropShape] = useState('rect'); 
             const cropCanvasRef = useRef(null);
             const cropImageRef = useRef(null);
 
@@ -102,7 +109,7 @@
             const pxToIn = (px) => parseInt(px) / 96;
             const inToPx = (inc) => Math.round(inc * 96);
 
-            // --- Lógica de Páginas ---
+            // --- Lógica de Páginas y Layout ---
             const addPage = () => {
                 const newId = Math.max(...pages.map(p => p.id)) + 1;
                 setPages([...pages, { ...activePage, id: newId }]);
@@ -119,10 +126,7 @@
                 const val = e.target.value;
                 let newSize = { ...activePage };
                 if (val === 'custom') { 
-                    setIsCustom(true); 
-                    newSize.width = customSize.width; 
-                    newSize.height = customSize.height; 
-                    newSize.name = 'Personalizado'; 
+                    setIsCustom(true); newSize.width = customSize.width; newSize.height = customSize.height; newSize.name = 'Personalizado'; 
                 } else { 
                     setIsCustom(false); 
                     const sizes = { 
@@ -137,30 +141,21 @@
                 }
                 setPages(pages.map(p => p.id === activePageId ? newSize : p));
             };
-
             const toggleOrientation = (orient) => {
                 const p = activePage;
                 const isPortrait = p.height >= p.width;
-                let newW = p.width;
-                let newH = p.height;
-
-                if (orient === 'portrait' && !isPortrait) {
-                    newW = p.height;
-                    newH = p.width;
-                } else if (orient === 'landscape' && isPortrait) {
-                    newW = p.height;
-                    newH = p.width;
-                }
+                let newW = p.width; let newH = p.height;
+                if (orient === 'portrait' && !isPortrait) { newW = p.height; newH = p.width; } 
+                else if (orient === 'landscape' && isPortrait) { newW = p.height; newH = p.width; }
                 setPages(pages.map(pg => pg.id === activePageId ? { ...pg, width: newW, height: newH } : pg));
             };
-
             const updateCustomDimension = (dim, displayVal) => {
                 const inches = fromDisplay(displayVal);
                 setCustomSize(prev => ({ ...prev, [dim]: inches }));
                 setPages(pages.map(p => p.id === activePageId ? { ...p, [dim]: inches, name: 'Personalizado' } : p));
             };
 
-            // --- Lógica de Imágenes ---
+            // --- Gestión de Imágenes ---
             const processImageFile = (file) => {
                 const reader = new FileReader();
                 reader.onload = (event) => {
@@ -177,7 +172,8 @@
                             x: MARGIN_IN + 0.5, y: MARGIN_IN + 0.5,
                             rotation: 0,
                             originalAspect: aspect,
-                            borderSize: 0, borderColor: '#000000'
+                            borderSize: 0, borderColor: '#000000',
+                            shape: 'rect' // Default shape
                         };
                         setImages(prev => [...prev, newImage]);
                         setSelectedIds([newImage.id]); 
@@ -185,22 +181,17 @@
                 };
                 reader.readAsDataURL(file);
             };
-
             const handleImageUpload = (e) => {
                 const files = Array.from(e.target.files);
                 files.forEach(processImageFile);
                 e.target.value = '';
             };
-
             useEffect(() => {
                 const handlePaste = (e) => {
                     const items = e.clipboardData?.items;
                     if (!items) return;
                     for (let i = 0; i < items.length; i++) {
-                        if (items[i].type.indexOf('image') !== -1) {
-                            const file = items[i].getAsFile();
-                            processImageFile(file);
-                        }
+                        if (items[i].type.indexOf('image') !== -1) { processImageFile(items[i].getAsFile()); }
                     }
                 };
                 document.addEventListener('paste', handlePaste);
@@ -215,40 +206,104 @@
                 if (field === 'rotation') finalVal = parseFloat(value) % 360; 
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, [field]: finalVal } : img));
             };
-
             const rotateSelected = (angle) => {
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, rotation: (img.rotation + angle) % 360 } : img));
             };
-
             const fixAspectRatio = () => {
                 if (selectedIds.length === 0) return;
                 setImages(images.map(img => selectedIds.includes(img.id) ? { ...img, height: img.width / img.originalAspect } : img));
             };
-
             const deleteSelected = () => {
                 setImages(images.filter(img => !selectedIds.includes(img.id)));
                 setSelectedIds([]);
             };
 
-            // --- Lógica de Recorte (CROP) ---
+            // --- CROP: Lógica de Recorte Mejorada (Mover vs Crear) ---
             const initiateCrop = () => {
                 if (selectedIds.length !== 1) { alert("Selecciona una sola imagen para recortar."); return; }
                 const img = images.find(i => i.id === selectedIds[0]);
-                setCropTarget(img); setCropRect(null); 
+                setCropTarget(img); setCropRect(null); setCropShape('rect'); 
+                setCropDragMode('none');
             };
             const closeCrop = () => { setCropTarget(null); setCropRect(null); };
-            const handleCropCanvasMouseDown = (e) => {
+
+            const handleCropCanvasMouseDownWrapper = (e) => {
                 const rect = cropCanvasRef.current.getBoundingClientRect();
-                const x = e.clientX - rect.left, y = e.clientY - rect.top;
-                setIsSelectingCrop(true); setCropRect({ x, y, w: 0, h: 0, startX: x, startY: y });
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                // Verificar si clicamos DENTRO del recorte existente para MOVERLO
+                let clickedInside = false;
+                if (cropRect && cropRect.w > 0 && cropRect.h > 0) {
+                    if (cropShape === 'rect') {
+                        if (x >= cropRect.x && x <= cropRect.x + cropRect.w && y >= cropRect.y && y <= cropRect.y + cropRect.h) clickedInside = true;
+                    } else {
+                        const cx = cropRect.x + cropRect.w / 2;
+                        const cy = cropRect.y + cropRect.h / 2;
+                        const radius = cropRect.w / 2;
+                        if (Math.hypot(x - cx, y - cy) <= radius) clickedInside = true;
+                    }
+                }
+
+                if (clickedInside) {
+                    setCropDragMode('move');
+                    setCropDragOffset({ x: x - cropRect.x, y: y - cropRect.y });
+                } else {
+                    setCropDragMode('create');
+                    setMouseStart({ x, y });
+                    setCropRect({ x, y, w: 0, h: 0 });
+                }
             };
-            const handleCropCanvasMouseMove = (e) => {
-                if (!isSelectingCrop) return;
+
+            const handleCropCanvasMouseMoveWrapper = (e) => {
                 const rect = cropCanvasRef.current.getBoundingClientRect();
-                const currentX = e.clientX - rect.left, currentY = e.clientY - rect.top;
-                setCropRect(prev => ({ ...prev, x: Math.min(prev.startX, currentX), y: Math.min(prev.startY, currentY), w: Math.abs(currentX - prev.startX), h: Math.abs(currentY - prev.startY) }));
+                const currentX = e.clientX - rect.left;
+                const currentY = e.clientY - rect.top;
+                const canvasW = cropCanvasRef.current.width;
+                const canvasH = cropCanvasRef.current.height;
+
+                // Actualizar cursor visualmente
+                if (cropDragMode === 'none') {
+                    let isOver = false;
+                    if (cropRect && cropRect.w > 0) {
+                        if (cropShape === 'rect') {
+                            if (currentX >= cropRect.x && currentX <= cropRect.x + cropRect.w && currentY >= cropRect.y && currentY <= cropRect.y + cropRect.h) isOver = true;
+                        } else {
+                            const cx = cropRect.x + cropRect.w / 2;
+                            const cy = cropRect.y + cropRect.h / 2;
+                            if (Math.hypot(currentX - cx, currentY - cy) <= cropRect.w / 2) isOver = true;
+                        }
+                    }
+                    setCropCursor(isOver ? 'move' : 'crosshair');
+                    return;
+                }
+
+                // Lógica de Arrastre
+                if (cropDragMode === 'create' && mouseStart) {
+                    let w = Math.abs(currentX - mouseStart.x);
+                    let h = Math.abs(currentY - mouseStart.y);
+                    if (cropShape === 'circle') {
+                        const size = Math.max(w, h);
+                        w = size; h = size;
+                    }
+                    const newX = currentX < mouseStart.x ? mouseStart.x - w : mouseStart.x;
+                    const newY = currentY < mouseStart.y ? mouseStart.y - h : mouseStart.y;
+                    setCropRect({ x: newX, y: newY, w, h });
+                } else if (cropDragMode === 'move' && cropRect) {
+                    let newX = currentX - cropDragOffset.x;
+                    let newY = currentY - cropDragOffset.y;
+                    // Restringir al canvas para no sacar el recorte de la imagen
+                    newX = Math.max(0, Math.min(newX, canvasW - cropRect.w));
+                    newY = Math.max(0, Math.min(newY, canvasH - cropRect.h));
+                    setCropRect(prev => ({ ...prev, x: newX, y: newY }));
+                }
             };
-            const handleCropCanvasMouseUp = () => setIsSelectingCrop(false);
+
+            const handleCropCanvasMouseUp = () => {
+                setCropDragMode('none');
+                setMouseStart(null);
+            };
+            
             const applyCrop = () => {
                 if (!cropRect || cropRect.w === 0 || cropRect.h === 0) { closeCrop(); return; }
                 const canvas = cropCanvasRef.current, imgElement = cropImageRef.current; 
@@ -256,16 +311,30 @@
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = cropRect.w * scaleX; tempCanvas.height = cropRect.h * scaleY;
                 const ctx = tempCanvas.getContext('2d');
+
+                if (cropShape === 'circle') {
+                    ctx.beginPath();
+                    ctx.ellipse(tempCanvas.width/2, tempCanvas.height/2, tempCanvas.width/2, tempCanvas.height/2, 0, 0, 2*Math.PI);
+                    ctx.clip();
+                }
+
                 ctx.drawImage(imgElement, cropRect.x * scaleX, cropRect.y * scaleY, cropRect.w * scaleX, cropRect.h * scaleY, 0, 0, tempCanvas.width, tempCanvas.height);
                 const newSrc = tempCanvas.toDataURL('image/png');
                 setImages(images.map(img => {
                     if (img.id === cropTarget.id) {
                         const newAspect = tempCanvas.width / tempCanvas.height;
-                        return { ...img, src: newSrc, height: img.width / newAspect, originalAspect: newAspect };
+                        return { 
+                            ...img, 
+                            src: newSrc, 
+                            height: img.width / newAspect, 
+                            originalAspect: newAspect,
+                            shape: cropShape // Guardar forma del recorte
+                        };
                     } return img;
                 }));
                 closeCrop();
             };
+
             useEffect(() => {
                 if (cropTarget && cropCanvasRef.current) {
                     const canvas = cropCanvasRef.current, ctx = canvas.getContext('2d'), img = cropImageRef.current;
@@ -273,12 +342,25 @@
                     if(img.complete) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
                     if (cropRect) {
-                        ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-                        ctx.drawImage(img, (cropRect.x/canvas.width)*img.naturalWidth, (cropRect.y/canvas.height)*img.naturalHeight, (cropRect.w/canvas.width)*img.naturalWidth, (cropRect.h/canvas.height)*img.naturalHeight, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-                        ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                        ctx.save();
+                        if (cropShape === 'circle') {
+                            ctx.beginPath();
+                            ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI);
+                            ctx.clip();
+                            ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                            ctx.drawImage(img, (cropRect.x/canvas.width)*img.naturalWidth, (cropRect.y/canvas.height)*img.naturalHeight, (cropRect.w/canvas.width)*img.naturalWidth, (cropRect.h/canvas.height)*img.naturalHeight, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                            ctx.restore();
+                            ctx.beginPath();
+                            ctx.ellipse(cropRect.x + cropRect.w/2, cropRect.y + cropRect.h/2, cropRect.w/2, cropRect.h/2, 0, 0, 2*Math.PI);
+                            ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.stroke();
+                        } else {
+                            ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                            ctx.drawImage(img, (cropRect.x/canvas.width)*img.naturalWidth, (cropRect.y/canvas.height)*img.naturalHeight, (cropRect.w/canvas.width)*img.naturalWidth, (cropRect.h/canvas.height)*img.naturalHeight, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                            ctx.strokeStyle = 'red'; ctx.lineWidth = 2; ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+                        }
                     }
                 }
-            }, [cropRect, cropTarget]);
+            }, [cropRect, cropTarget, cropShape, cropDragMode]); // Re-renderizar si cambia el modo de arrastre
 
             // --- Interacciones Main Canvas ---
             const handleMouseDown = (e, img) => {
@@ -303,37 +385,14 @@
                 }
             };
 
-            // --- FUNCIÓN DE CLAMPING ROTADO ---
-            // Calcula si la imagen rota en la posición (x, y) se sale de los márgenes
             const getRotatedBounds = (x, y, w, h, rotationDeg) => {
                 const rad = rotationDeg * (Math.PI / 180);
-                const cos = Math.cos(rad);
-                const sin = Math.sin(rad);
-                
-                // Rotación relativa al top-left (0,0 es el pivote)
-                // Puntos originales relativos al pivote
-                const p0 = {x: 0, y: 0};
-                const p1 = {x: w, y: 0};
-                const p2 = {x: w, y: h};
-                const p3 = {x: 0, y: h};
-
-                // Rotar puntos
-                const rotate = (p) => ({
-                    x: p.x * cos - p.y * sin,
-                    y: p.x * sin + p.y * cos
-                });
-
-                const r0 = rotate(p0);
-                const r1 = rotate(p1);
-                const r2 = rotate(p2);
-                const r3 = rotate(p3);
-
-                // Encontrar min/max relativos
-                const minRx = Math.min(r0.x, r1.x, r2.x, r3.x);
-                const maxRx = Math.max(r0.x, r1.x, r2.x, r3.x);
-                const minRy = Math.min(r0.y, r1.y, r2.y, r3.y);
-                const maxRy = Math.max(r0.y, r1.y, r2.y, r3.y);
-
+                const cos = Math.cos(rad); const sin = Math.sin(rad);
+                const p0 = {x:0,y:0}, p1 = {x:w,y:0}, p2 = {x:w,y:h}, p3 = {x:0,y:h};
+                const rotate = (p) => ({ x: p.x*cos - p.y*sin, y: p.x*sin + p.y*cos });
+                const r0=rotate(p0), r1=rotate(p1), r2=rotate(p2), r3=rotate(p3);
+                const minRx = Math.min(r0.x,r1.x,r2.x,r3.x), maxRx = Math.max(r0.x,r1.x,r2.x,r3.x);
+                const minRy = Math.min(r0.y,r1.y,r2.y,r3.y), maxRy = Math.max(r0.y,r1.y,r2.y,r3.y);
                 return { minRx, maxRx, minRy, maxRy };
             };
 
@@ -350,7 +409,7 @@
                 let deltaY = (e.clientY - dragState.startY) / CURRENT_PPI;
                 const minX = MARGIN_IN, minY = MARGIN_IN, maxX = activePage.width - MARGIN_IN, maxY = activePage.height - MARGIN_IN;
                 
-                // 1. SNAPPING
+                // SNAPPING
                 const snapThreshIn = SNAP_THRESHOLD_PX / CURRENT_PPI;
                 let snapAdjustmentX = 0, snapAdjustmentY = 0;
                 let activeGuides = [];
@@ -365,8 +424,6 @@
 
                 for (let mImg of movingImagesProto) {
                     if (snappedX && snappedY) break;
-                    // Simplificación: Snapping usa el bounding box no rotado para alinear centros/bordes "lógicos". 
-                    // Para snapping perfecto con rotación se necesita AABB, pero para UX simple esto basta.
                     const mLeft = mImg.x; const mRight = mImg.x + mImg.width; const mCenterX = mImg.x + mImg.width / 2;
                     const mTop = mImg.y; const mBottom = mImg.y + mImg.height; const mCenterY = mImg.y + mImg.height / 2;
 
@@ -392,48 +449,23 @@
                 }
                 setGuides(activeGuides);
 
-                // 2. APLICAR DELTA PROPUESTO
                 let proposedDeltaX = deltaX + snapAdjustmentX;
                 let proposedDeltaY = deltaY + snapAdjustmentY;
 
-                // 3. RESTRICCIÓN DE MÁRGENES (CLAMPING AVANZADO CON ROTACIÓN)
+                // RESTRICCIÓN DE MÁRGENES (CLAMPING AVANZADO CON ROTACIÓN)
                 let minDx = -Infinity, maxDx = Infinity, minDy = -Infinity, maxDy = Infinity;
-                
                 selectedIds.forEach(id => {
                     const pos = dragState.initialPositions[id];
                     const img = images.find(i => i.id === id);
                     if (!pos || !img) return;
-
-                    // Obtenemos los límites relativos de la imagen rotada
                     const bounds = getRotatedBounds(pos.x, pos.y, img.width, img.height, img.rotation || 0);
-                    
-                    // La posición final X será (pos.x + deltaX).
-                    // El borde izquierdo visual será (pos.x + deltaX) + bounds.minRx
-                    // Queremos que (pos.x + deltaX) + bounds.minRx >= minX (Margen Izquierdo)
-                    // deltaX >= minX - pos.x - bounds.minRx
-                    
-                    const distToLeftMargin = minX - (pos.x + bounds.minRx);
-                    const distToRightMargin = maxX - (pos.x + bounds.maxRx);
-                    const distToTopMargin = minY - (pos.y + bounds.minRy);
-                    const distToBottomMargin = maxY - (pos.y + bounds.maxRy);
-
-                    // minDx debe ser al menos lo necesario para salir del margen izquierdo (si está fuera) o no pasar mas allá
-                    // En realidad queremos limitar el movimiento.
-                    // Maximo movimiento a la izquierda = distancia actual al margen izquierdo.
-                    // Distancia actual del borde izquierdo visual al margen = (pos.x + bounds.minRx) - minX
-                    // Si movemos a la izquierda (delta negativo), no puede ser mayor que esa distancia.
-                    
                     const spaceLeft = (pos.x + bounds.minRx) - minX;
                     const spaceRight = maxX - (pos.x + bounds.maxRx);
                     const spaceTop = (pos.y + bounds.minRy) - minY;
                     const spaceBottom = maxY - (pos.y + bounds.maxRy);
-
-                    minDx = Math.max(minDx, -spaceLeft);
-                    maxDx = Math.min(maxDx, spaceRight);
-                    minDy = Math.max(minDy, -spaceTop);
-                    maxDy = Math.min(maxDy, spaceBottom);
+                    minDx = Math.max(minDx, -spaceLeft); maxDx = Math.min(maxDx, spaceRight);
+                    minDy = Math.max(minDy, -spaceTop); maxDy = Math.min(maxDy, spaceBottom);
                 });
-
                 const finalDeltaX = Math.max(minDx, Math.min(proposedDeltaX, maxDx));
                 const finalDeltaY = Math.max(minDy, Math.min(proposedDeltaY, maxDy));
 
@@ -457,7 +489,16 @@
                             if (img.borderSize > 0) {
                                 const r = parseInt(img.borderColor.slice(1, 3), 16), g = parseInt(img.borderColor.slice(3, 5), 16), b = parseInt(img.borderColor.slice(5, 7), 16);
                                 doc.setFillColor(r, g, b);
-                                if(rot === 0) doc.rect(img.x - img.borderSize, img.y - img.borderSize, img.width + img.borderSize*2, img.height + img.borderSize*2, 'F');
+                                if (img.shape === 'circle') {
+                                    // Dibujar círculo si la imagen está recortada como círculo
+                                    const radius = (img.width / 2) + img.borderSize;
+                                    const cx = img.x + (img.width / 2);
+                                    const cy = img.y + (img.height / 2);
+                                    doc.circle(cx, cy, radius, 'F');
+                                } else {
+                                    // Rectángulo normal si no (solo si no hay rotación compleja, jsPDF básico)
+                                    if(rot === 0) doc.rect(img.x - img.borderSize, img.y - img.borderSize, img.width + img.borderSize*2, img.height + img.borderSize*2, 'F');
+                                }
                             }
                             doc.addImage(img.src, 'JPEG', img.x, img.y, img.width, img.height, undefined, 'FAST', rot);
                         } catch (e) {}
@@ -567,10 +608,11 @@
                                                 style={{ 
                                                     left: `${img.x * CURRENT_PPI}px`, top: `${img.y * CURRENT_PPI}px`, width: `${img.width * CURRENT_PPI}px`, height: `${img.height * CURRENT_PPI}px`,
                                                     borderWidth: `${img.borderSize * CURRENT_PPI}px`, borderStyle: 'solid', borderColor: img.borderColor, boxSizing: 'content-box',
-                                                    transform: `rotate(${img.rotation || 0}deg)`, transformOrigin: 'top left' 
+                                                    transform: `rotate(${img.rotation || 0}deg)`, transformOrigin: 'top left',
+                                                    borderRadius: img.shape === 'circle' ? '50%' : '0' 
                                                 }}>
                                                 <img src={img.src} className="w-full h-full object-fill pointer-events-none block" style={{ opacity: isDragging && selectedIds.includes(img.id) ? 0.7 : 1 }} />
-                                                {selectedIds.includes(img.id) && <div className="absolute inset-0 border-2 border-blue-600 pointer-events-none" style={{ margin: `-${img.borderSize * CURRENT_PPI + 2}px` }}></div>}
+                                                {selectedIds.includes(img.id) && <div className="absolute inset-0 border-2 border-blue-600 pointer-events-none" style={{ margin: `-${img.borderSize * CURRENT_PPI + 2}px`, borderRadius: img.shape === 'circle' ? '50%' : '0' }}></div>}
                                             </div>
                                         ))}
                                     </div>
@@ -602,7 +644,30 @@
                         <div className="fixed inset-0 bg-black/90 z-[100] flex flex-col items-center justify-center p-4">
                             <div className="bg-white p-2 rounded-t-lg flex justify-between items-center w-full max-w-4xl">
                                 <h3 className="font-bold text-gray-700 flex items-center gap-2"><IconCrop /> Recortar Imagen</h3>
-                                <div className="text-xs text-gray-500">Dibuja un rectángulo rojo sobre el área a conservar</div>
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => setCropRect(null)}
+                                        className="p-2 rounded hover:bg-gray-100 text-gray-500"
+                                        title="Reiniciar Corte"
+                                    >
+                                        <IconRefresh />
+                                    </button>
+                                    <div className="w-[1px] h-6 bg-gray-300 mx-1"></div>
+                                    <button 
+                                        onClick={() => setCropShape('rect')}
+                                        className={`p-2 rounded hover:bg-gray-100 ${cropShape === 'rect' ? 'bg-blue-100 text-blue-600' : 'text-gray-500'}`}
+                                        title="Rectángulo"
+                                    >
+                                        <IconSquare />
+                                    </button>
+                                    <button 
+                                        onClick={() => setCropShape('circle')}
+                                        className={`p-2 rounded hover:bg-gray-100 ${cropShape === 'circle' ? 'bg-blue-100 text-blue-600' : 'text-gray-500'}`}
+                                        title="Círculo (Simétrico)"
+                                    >
+                                        <IconCircle />
+                                    </button>
+                                </div>
                             </div>
                             
                             <div className="relative bg-gray-800 w-full max-w-4xl h-[70vh] flex items-center justify-center overflow-hidden border-x border-gray-600 select-none">
@@ -630,9 +695,10 @@
                                 />
                                 <canvas 
                                     ref={cropCanvasRef}
-                                    className="crosshair-cursor shadow-2xl"
-                                    onMouseDown={handleCropCanvasMouseDown}
-                                    onMouseMove={handleCropCanvasMouseMove}
+                                    style={{ cursor: cropCursor }}
+                                    className="shadow-2xl"
+                                    onMouseDown={handleCropCanvasMouseDownWrapper}
+                                    onMouseMove={handleCropCanvasMouseMoveWrapper}
                                     onMouseUp={handleCropCanvasMouseUp}
                                     onMouseLeave={handleCropCanvasMouseUp}
                                 />
